@@ -1,0 +1,21 @@
+{
+  "id": 1,
+  "src_db_id": 1,
+  "tgt_db_id": 2,
+  "src_db_type": "mysql",
+  "src_host": "localhost",
+  "src_port": 3306,
+  "src_username": "root",
+  "src_password": "123456",
+  "src_db_name": "test",
+  "src_table_name": "ods_quickbi_user_info",
+  "tgt_db_type": "mysql",
+  "tgt_host": "localhost",
+  "tgt_port": 3306,
+  "tgt_username": "root",
+  "tgt_password": "123456",
+  "tgt_db_name": "test",
+  "tgt_table_name": "ods_quickbi_user_info_test",
+  "update_time_str": "into_bigdata_time",
+  "sensitive_str": ""
+}
