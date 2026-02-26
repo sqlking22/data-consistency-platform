@@ -87,7 +87,7 @@ ENGINE_STRATEGY = "auto"  # pandas/spark_local/spark_cluster/auto
 ENABLE_REPAIR = True
 IS_INCREMENTAL = True
 INCREMENTAL_DAYS = 1
-TIME_TOLERANCE = 300  # 时间容差（秒）
+TIME_TOLERANCE = 0  # 时间容差（秒）
 RETRY_TIMES = 3  # 重试次数
 RETRY_DELAY = 5  # 重试延迟（秒）
 
