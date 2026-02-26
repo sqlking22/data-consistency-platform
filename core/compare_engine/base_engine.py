@@ -189,7 +189,6 @@ class BaseCompareEngine(ABC):
                 self.src_adapter.close()
             if self.tgt_adapter:
                 self.tgt_adapter.close()
-        print(self.compare_result)
         return self.compare_result
 
 
