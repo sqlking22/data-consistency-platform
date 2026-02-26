@@ -129,11 +129,15 @@ class DataXRepairEngine(BaseRepairEngine):
     def _build_where_clauses_batch(self) -> List[str]:
         """批量构建WHERE子句（使用IN语法，每批最多3000条）
 
+        支持基于时间字段的智能过滤：
+        - 对于mismatch记录，只有源端时间字段 > 目标端时间字段的记录才需要修复
+        - src_only记录全部需要修复
+
         Returns:
             WHERE子句列表，每个子句对应一个批次
         """
         from utils.logger import logger
-        from config.settings import REPAIR_MAX_WHERE_IN_RECORDS
+        from config.settings import REPAIR_MAX_WHERE_IN_RECORDS, TIME_TOLERANCE
         import pandas as pd
 
         diff_records = self.compare_result.get('diff_records', {})
@@ -164,19 +168,140 @@ class DataXRepairEngine(BaseRepairEngine):
             time_where = self._build_where_clause_from_time_range()
             return [time_where] if time_where else []
 
-        # 合并所有需要同步的记录（不匹配+源端独有，忽略目标端独有）
+        # 收集需要同步的记录
         all_diff_keys = []
-        all_diff_keys.extend(diff_records.get('mismatch', []))
-        all_diff_keys.extend(diff_records.get('src_only', []))
+
+        # 1. 处理mismatch记录：需要基于时间字段过滤
+        mismatch_full = diff_records.get('mismatch_full', [])
+        if mismatch_full:
+            # 检查是否配置了时间字段
+            update_time_col = self.config.get('update_time_str')
+            enable_time_filter = self.config.get('enable_time_filter', True)  # 默认启用时间过滤
+
+            if update_time_col and enable_time_filter:
+                logger.info(f"启用时间字段过滤：{update_time_col}，时间容差：{TIME_TOLERANCE}秒")
+                time_filtered_count = 0
+
+                for record_data in mismatch_full:
+                    src_record = record_data.get('src_record', {})
+                    tgt_record = record_data.get('tgt_record', {})
+                    pk = record_data.get('pk', {})
+
+                    src_time = src_record.get(update_time_col)
+                    tgt_time = tgt_record.get(update_time_col)
+
+                    # 比较时间字段
+                    should_repair = False
+                    if src_time and tgt_time:
+                        try:
+                            # 转换为datetime对象进行比较
+                            if isinstance(src_time, str):
+                                src_time = pd.to_datetime(src_time)
+                            if isinstance(tgt_time, str):
+                                tgt_time = pd.to_datetime(tgt_time)
+
+                            # 源端时间 > 目标端时间 + 时间容差，才需要修复
+                            time_diff_seconds = (src_time - tgt_time).total_seconds()
+                            if time_diff_seconds >= TIME_TOLERANCE:
+                                should_repair = True
+                                time_filtered_count += 1
+                                logger.debug(f"记录{pk}需要修复：源端时间{src_time} > 目标端时间{tgt_time}（差{time_diff_seconds}秒）")
+                            else:
+                                logger.debug(f"记录{pk}无需修复：源端时间{src_time} <= 目标端时间{tgt_time}（差{time_diff_seconds}秒）")
+                        except Exception as e:
+                            logger.warning(f"时间字段比较失败，默认修复：{pk}, 错误：{str(e)}")
+                            should_repair = True
+                    else:
+                        # 时间字段为空，默认需要修复
+                        should_repair = True
+                        logger.debug(f"记录{pk}时间字段为空，默认需要修复")
+
+                    if should_repair:
+                        all_diff_keys.append(pk)
+            else:
+                # 未配置时间字段或未启用时间过滤，全部修复
+                logger.info("未配置时间字段或未启用时间过滤，mismatch记录全部修复")
+                all_diff_keys.extend(diff_records.get('mismatch', []))
+        else:
+            # 向后兼容：使用旧的mismatch格式
+            all_diff_keys.extend(diff_records.get('mismatch', []))
+
+        # 2. 处理src_only记录：需要查询目标端验证是否真的不存在或时间更旧
+        src_only_records = diff_records.get('src_only', [])
+        if src_only_records:
+            # 检查是否配置了时间字段
+            update_time_col = self.config.get('update_time_str')
+            enable_time_filter = self.config.get('enable_time_filter', True)  # 默认启用时间过滤
+
+            if update_time_col and enable_time_filter:
+                logger.info(f"处理源端独有记录：需要查询目标端验证时间字段")
+                src_only_need_repair_count = 0
+                src_only_skip_count = 0
+
+                # 批量查询目标端记录
+                for record in src_only_records:
+                    pk_dict = {pk: record[pk] for pk in pk_columns if pk in record}
+                    if not pk_dict:
+                        continue
+
+                    # 从源端记录中获取时间字段值
+                    src_time = record.get(update_time_col)
+
+                    # 查询目标端是否存在该记录
+                    tgt_record = self._query_target_record(pk_dict, pk_columns, [update_time_col])
+
+                    if tgt_record is None:
+                        # 目标端不存在该记录，需要修复（插入）
+                        all_diff_keys.append(pk_dict)
+                        src_only_need_repair_count += 1
+                        logger.debug(f"源端独有记录{pk_dict}：目标端不存在，需要插入")
+                    else:
+                        # 目标端存在该记录，比较时间字段
+                        tgt_time = tgt_record.get(update_time_col)
+
+                        if src_time and tgt_time:
+                            try:
+                                # 转换为datetime对象进行比较
+                                if isinstance(src_time, str):
+                                    src_time = pd.to_datetime(src_time)
+                                if isinstance(tgt_time, str):
+                                    tgt_time = pd.to_datetime(tgt_time)
+
+                                # 源端时间 > 目标端时间 + 时间容差，才需要修复
+                                time_diff_seconds = (src_time - tgt_time).total_seconds()
+                                if time_diff_seconds >= TIME_TOLERANCE:
+                                    all_diff_keys.append(pk_dict)
+                                    src_only_need_repair_count += 1
+                                    logger.debug(f"源端独有记录{pk_dict}需要修复：源端时间{src_time} > 目标端时间{tgt_time}（差{time_diff_seconds}秒）")
+                                else:
+                                    src_only_skip_count += 1
+                                    logger.info(f"源端独有记录{pk_dict}无需修复：源端时间{src_time} <= 目标端时间{tgt_time}（差{time_diff_seconds}秒）- 避免用旧数据覆盖新数据")
+                            except Exception as e:
+                                logger.warning(f"时间字段比较失败，跳过修复：{pk_dict}, 错误：{str(e)}")
+                                src_only_skip_count += 1
+                        else:
+                            # 时间字段为空，默认需要修复
+                            all_diff_keys.append(pk_dict)
+                            src_only_need_repair_count += 1
+                            logger.debug(f"源端独有记录{pk_dict}时间字段为空，默认需要修复")
+
+                logger.info(f"源端独有记录共{len(src_only_records)}条：需要修复{src_only_need_repair_count}条，跳过{src_only_skip_count}条（避免旧数据覆盖新数据）")
+            else:
+                # 未配置时间字段或未启用时间过滤，全部修复
+                logger.info("未配置时间字段或未启用时间过滤，源端独有记录全部修复")
+                for record in src_only_records:
+                    pk_dict = {pk: record[pk] for pk in pk_columns if pk in record}
+                    if pk_dict:
+                        all_diff_keys.append(pk_dict)
 
         if not all_diff_keys:
-            logger.info("需同步的记录")
+            logger.info("没有需要修复的记录")
             return ["1=0"]  # 返回永假条件
 
         total_records = len(all_diff_keys)
         batch_size = REPAIR_MAX_WHERE_IN_RECORDS  # 从配置获取批量大小
 
-        logger.info(f"共有{total_records}条差异数据，每批最多{batch_size}条，将生成{(total_records + batch_size - 1) // batch_size}个批次")
+        logger.info(f"共有{total_records}条需要修复的数据，每批最多{batch_size}条，将生成{(total_records + batch_size - 1) // batch_size}个批次")
 
         # 分批处理
         where_clauses = []
@@ -284,6 +409,67 @@ class DataXRepairEngine(BaseRepairEngine):
             return f"'{formatted_time}'"
         else:
             return str(value)
+
+    def _query_target_record(self, pk_dict: Dict[str, Any], pk_columns: List[str], columns: List[str]) -> Dict[str, Any]:
+        """查询目标端记录
+
+        Args:
+            pk_dict: 主键字典 {主键列名: 值}
+            pk_columns: 主键列名列表
+            columns: 需要查询的列名列表
+
+        Returns:
+            目标端记录字典，如果不存在返回None
+        """
+        from utils.logger import logger
+        from core.db_adapter.base_adapter import get_db_adapter
+
+        try:
+            # 创建目标端适配器
+            tgt_config = {
+                'db_type': self.config['tgt_db_type'],
+                'host': self.config['tgt_host'],
+                'port': self.config['tgt_port'],
+                'user': self.config['tgt_username'],
+                'password': self.config['tgt_password'],
+                'database': self.config['tgt_db_name']
+            }
+            tgt_adapter = get_db_adapter(tgt_config)
+
+            try:
+                # 构建WHERE条件
+                where_conditions = []
+                for pk_col in pk_columns:
+                    if pk_col in pk_dict:
+                        value = pk_dict[pk_col]
+                        formatted_value = self._format_sql_value(value)
+                        where_conditions.append(f"{pk_col} = {formatted_value}")
+
+                if not where_conditions:
+                    logger.warning(f"主键条件为空，无法查询目标端记录")
+                    return None
+
+                where_clause = " AND ".join(where_conditions)
+
+                # 查询目标端记录
+                tgt_data = tgt_adapter.query_data(
+                    self.config['tgt_db_name'],
+                    self.config['tgt_table_name'],
+                    columns,
+                    where_clause
+                )
+
+                if tgt_data and len(tgt_data) > 0:
+                    return tgt_data[0]  # 返回第一条记录
+                else:
+                    return None
+
+            finally:
+                tgt_adapter.close()
+
+        except Exception as e:
+            logger.error(f"查询目标端记录失败：{str(e)}")
+            return None
 
     def _build_where_clause_from_diff_records(self) -> str:
         """根据差异数据构建WHERE子句（支持联合主键）"""

@@ -79,19 +79,48 @@ class PandasCompareEngine(BaseCompareEngine):
         # ===== 新增：捕获差异数据 =====
         diff_records = {
             'mismatch': [],      # 值不匹配的记录
+            'mismatch_full': [], # 值不匹配的完整记录（包含源端和目标端所有字段）
             'src_only': [],      # 仅源端存在的记录
             'tgt_only': []       # 仅目标端存在的记录
         }
 
-        # 获取不匹配记录
+        # 获取不匹配记录（包含所有字段，用于后续时间字段比较）
         if mismatch_count > 0:
             mismatch_df = compare.all_mismatch()
+            # 存储主键信息（用于向后兼容）
             diff_records['mismatch'] = mismatch_df[join_columns].to_dict('records')
 
-        # 获取源端独有记录
+            # 存储完整记录信息（包含源端和目标端数据）
+            # 从mismatch_df中提取源端和目标端的完整记录
+            update_column = columns.get('update_column', [])
+            for _, row in mismatch_df.iterrows():
+                # 构建主键条件
+                pk_condition = {pk: row[pk] for pk in join_columns}
+
+                # 从源端DataFrame中找到对应的完整记录
+                src_mask = pd.Series([True] * len(self.src_df))
+                for pk in join_columns:
+                    src_mask &= (self.src_df[pk] == row[pk])
+                src_record = self.src_df[src_mask].iloc[0].to_dict() if src_mask.any() else {}
+
+                # 从目标端DataFrame中找到对应的完整记录
+                tgt_mask = pd.Series([True] * len(self.tgt_df))
+                for pk in join_columns:
+                    tgt_mask &= (self.tgt_df[pk] == row[pk])
+                tgt_record = self.tgt_df[tgt_mask].iloc[0].to_dict() if tgt_mask.any() else {}
+
+                # 存储包含源端和目标端完整数据的记录
+                diff_records['mismatch_full'].append({
+                    'pk': pk_condition,
+                    'src_record': src_record,
+                    'tgt_record': tgt_record,
+                    'update_column': update_column
+                })
+
+        # 获取源端独有记录（包含所有字段）
         if src_only_count > 0:
             src_only_df = compare.df1_unq_rows
-            diff_records['src_only'] = src_only_df[join_columns].to_dict('records')
+            diff_records['src_only'] = src_only_df.to_dict('records')
 
         # 获取目标端独有记录
         if tgt_only_count > 0:
