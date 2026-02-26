@@ -162,12 +162,6 @@ class BaseCompareEngine(ABC):
             # 执行比对
             self.compare()
 
-            # 生成报告
-            self.generate_report()
-
-            self.compare_result['compare_status'] = 'success'
-            self.compare_result['compare_msg'] = '比对成功'
-
         except Exception as e:
             self.compare_result['compare_status'] = 'fail'
             self.compare_result['compare_msg'] = str(e)
@@ -179,6 +173,16 @@ class BaseCompareEngine(ABC):
             self.compare_result['compare_start_time'] = self.start_time
             self.compare_result['compare_end_time'] = self.end_time
             self.compare_result['compare_cost_minute'] = round(cost_seconds / 60, 6)
+            # 设置比对时间（用于HTML报告）
+            self.compare_result['compare_time'] = self.start_time.strftime('%Y-%m-%d %H:%M:%S')
+
+            # 如果比对成功，设置成功状态
+            if 'compare_status' not in self.compare_result or not self.compare_result['compare_status']:
+                self.compare_result['compare_status'] = 'success'
+                self.compare_result['compare_msg'] = '比对成功'
+
+            # 生成报告（在所有必要字段设置完成之后）
+            self.generate_report()
 
             # 关闭连接
             if self.src_adapter:
