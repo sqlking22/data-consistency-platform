@@ -123,6 +123,12 @@ class BaseCompareEngine(ABC):
         # 记录检查字段
         self.compare_result[
             'check_column'] = f"key_columns：{pk_columns},update_column: {update_column},extra_columns: {extra_columns}"
+        # 添加结构化字段信息供修复引擎使用
+        self.compare_result['compare_columns'] = {
+            'key_columns': pk_columns,
+            'update_column': update_column,
+            'extra_columns': extra_columns
+        }
 
         return columns
 
@@ -179,7 +185,7 @@ class BaseCompareEngine(ABC):
                 self.src_adapter.close()
             if self.tgt_adapter:
                 self.tgt_adapter.close()
-
+        print(self.compare_result)
         return self.compare_result
 
 

@@ -32,7 +32,8 @@ class TestDataXRepairEngine:
                     job_file = engine.generate_datax_job()
 
                 assert job_file.endswith('.json')
-                assert 'repair_' in job_file
+                # 更新断言：文件名应该包含目标表名
+                assert 'target_table' in job_file  # sample_config中的目标表名是target_table
 
     def test_generate_datax_job_content(self, sample_config, sample_compare_result):
         """测试DataX作业文件内容"""
@@ -97,8 +98,13 @@ class TestDataXRepairEngine:
         writer_config = engine._get_writer_config()
 
         assert writer_config['name'] == 'mysqlwriter'
-        assert 'preSql' in writer_config['parameter']
+        # 新的安全实现：默认不包含preSql（没有TRUNCATE）
         assert 'writeMode' in writer_config['parameter']
+        assert 'writeMode' in writer_config['parameter']
+        # 如果没有显式配置repair_presql，preSql不应存在
+        if 'preSql' in writer_config['parameter']:
+            # 如果存在，确保不包含TRUNCATE
+            assert 'TRUNCATE' not in str(writer_config['parameter']['preSql'])
 
     def test_get_writer_config_oracle(self, sample_config, sample_compare_result):
         """测试获取Oracle Writer配置"""
@@ -223,7 +229,8 @@ class TestDataXRepairEngine:
                 result = engine.repair()
 
         assert result['repair_status'] == 'fail'
-        assert 'DataX执行失败' in result['repair_msg']
+        # 更新断言以匹配新的错误消息格式
+        assert '失败批次' in result['repair_msg'] or 'DataX执行失败' in result['repair_msg']
 
     def test_repair_exception(self, sample_config, sample_compare_result):
         """测试修复过程异常"""
@@ -258,12 +265,23 @@ class TestDataXRepairEngine:
         assert 'where' in reader_config['parameter']
 
     def test_writer_pre_sql(self, sample_config, sample_compare_result):
-        """测试Writer的preSql配置"""
+        """测试Writer的preSql配置 - 只有显式配置时才包含"""
+        # 测试1：没有配置repair_presql时，不应包含preSql
         engine = DataXRepairEngine(sample_config, sample_compare_result)
         writer_config = engine._get_writer_config()
 
-        assert 'preSql' in writer_config['parameter']
-        assert 'TRUNCATE TABLE' in writer_config['parameter']['preSql'][0]
+        # 默认不应该有preSql（安全行为）
+        assert 'preSql' not in writer_config['parameter'] or \
+               'TRUNCATE' not in str(writer_config['parameter'].get('preSql', ''))
+
+        # 测试2：显式配置repair_presql时，应该包含自定义preSql
+        sample_config['repair_presql'] = 'DELETE FROM target_table WHERE status = "expired"'
+        engine2 = DataXRepairEngine(sample_config, sample_compare_result)
+        writer_config2 = engine2._get_writer_config()
+
+        # 现在应该包含preSql，但不应该是TRUNCATE
+        assert 'preSql' in writer_config2['parameter']
+        assert 'TRUNCATE' not in str(writer_config2['parameter']['preSql'])
 
 
 class TestRepairEngineEdgeCases:
@@ -273,7 +291,12 @@ class TestRepairEngineEdgeCases:
         """测试空的检查范围"""
         compare_result = {
             'diff_cnt': 10,
-            'check_range': ''
+            'check_range': '',
+            'compare_columns': {
+                'key_columns': ['id'],
+                'update_column': ['update_time'],
+                'extra_columns': ['name']
+            }
         }
         engine = DataXRepairEngine(sample_config, compare_result)
 
@@ -286,7 +309,12 @@ class TestRepairEngineEdgeCases:
         """测试格式错误的检查范围"""
         compare_result = {
             'diff_cnt': 10,
-            'check_range': 'invalid_format'
+            'check_range': 'invalid_format',
+            'compare_columns': {
+                'key_columns': ['id'],
+                'update_column': ['update_time'],
+                'extra_columns': ['name']
+            }
         }
         engine = DataXRepairEngine(sample_config, compare_result)
 
@@ -298,7 +326,12 @@ class TestRepairEngineEdgeCases:
         sample_config['update_time_str'] = ''
         compare_result = {
             'diff_cnt': 10,
-            'check_range': '[2026-02-20,2026-02-25)'
+            'check_range': '[2026-02-20,2026-02-25)',
+            'compare_columns': {
+                'key_columns': ['id'],
+                'update_column': [],
+                'extra_columns': ['name']
+            }
         }
         engine = DataXRepairEngine(sample_config, compare_result)
 

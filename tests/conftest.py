@@ -128,6 +128,11 @@ def sample_compare_result():
         'matching_rate': 0.33,
         'check_range': '[2026-02-22 00:00:00,2026-02-25 00:00:00)',
         'check_column': "key_columns：['id'],update_column: ['update_time'],extra_columns: ['age', 'salary']",
+        'compare_columns': {
+            'key_columns': ['id'],
+            'update_column': ['update_time'],
+            'extra_columns': ['age', 'salary']
+        },
         'compare_report': '发现2条差异记录',
         'html_report': '<html>...</html>',
         'compare_start_time': datetime(2026, 2, 25, 10, 0, 0),

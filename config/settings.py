@@ -3,7 +3,12 @@
 # @Time    : 2026/1/9 12:42
 # @Author  : hejun
 import os
+import platform
+import shutil
 from datetime import datetime
+
+# 检测操作系统
+CURRENT_OS = platform.system().lower()  # 'windows', 'linux', 'darwin'
 
 # 日志配置
 LOG_LEVEL = 'INFO'
@@ -16,12 +21,38 @@ WX_AT_LIST = ['hejun']
 # WX_ALERT_THRESHOLD = 0.05  # 差异率超过5%触发告警
 WX_ALERT_THRESHOLD = 0.00 # 差异率超过5%触发告警
 
-# DataX相关配置
-DATAX_HOME = "/data/datax-3.0"
+# DataX相关配置 - 跨平台支持
+# Python可执行文件路径 - 跨平台支持
+if CURRENT_OS == 'windows':
+    # Windows: 优先使用PATH中的python，否则使用常见路径
+    PYTHON_BIN_PATH = shutil.which('python') or \
+                      shutil.which('python3') or \
+                      r'C:\Python311\python.exe'
+else:
+    # Linux/Unix: 使用常见的python路径
+    PYTHON_BIN_PATH = shutil.which('python3') or \
+                      shutil.which('python') or \
+                      '/usr/bin/python311'
+
+# DataX主目录 - 跨平台支持
+if CURRENT_OS == 'windows':
+    DATAX_HOME = r'D:\software_pkg\datax'  # Windows默认路径
+else:
+    DATAX_HOME = '/data/datax-3.0'  # Linux默认路径
+
+# 允许通过环境变量覆盖
+DATAX_HOME = os.getenv('DATAX_HOME', DATAX_HOME)
+PYTHON_BIN_PATH = os.getenv('PYTHON_BIN_PATH', PYTHON_BIN_PATH)
+
+# 验证路径存在性（仅警告，不阻止启动）
+if not os.path.exists(DATAX_HOME):
+    print(f"警告: DATAX_HOME路径不存在: {DATAX_HOME}")
+if PYTHON_BIN_PATH and not os.path.exists(PYTHON_BIN_PATH):
+    print(f"警告: PYTHON_BIN_PATH不存在: {PYTHON_BIN_PATH}")
+
 DATAX_BIN = os.path.join(DATAX_HOME, "bin", "datax.py")
 DATAX_JOB_DIR = os.path.join(DATAX_HOME, "job", datetime.now().strftime("%Y%m%d"))
 DATAX_LOG_LEVEL = 'INFO'
-PYTHON_BIN_PATH = "/usr/bin/python311"
 os.makedirs(DATAX_JOB_DIR, exist_ok=True)
 
 # 任务数据库连接配置
@@ -123,3 +154,8 @@ SPARK_CONFIG = {
         "deploy_mode": "cluster"
     }
 }
+
+# 修复引擎配置
+REPAIR_WRITE_MODE = 'update'  # Options: 'insert', 'update', 'replace'
+REPAIR_BATCH_SIZE = 500  # 批量修复时每批记录数
+REPAIR_MAX_WHERE_IN_RECORDS = 3000  # WHERE子句中最大记录数（IN语法）

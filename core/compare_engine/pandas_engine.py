@@ -76,6 +76,34 @@ class PandasCompareEngine(BaseCompareEngine):
         tgt_only_count = len(compare.df2_unq_rows)
         self.compare_result['diff_cnt'] = mismatch_count + src_only_count + tgt_only_count
 
+        # ===== 新增：捕获差异数据 =====
+        diff_records = {
+            'mismatch': [],      # 值不匹配的记录
+            'src_only': [],      # 仅源端存在的记录
+            'tgt_only': []       # 仅目标端存在的记录
+        }
+
+        # 获取不匹配记录
+        if mismatch_count > 0:
+            mismatch_df = compare.all_mismatch()
+            diff_records['mismatch'] = mismatch_df[join_columns].to_dict('records')
+
+        # 获取源端独有记录
+        if src_only_count > 0:
+            src_only_df = compare.df1_unq_rows
+            diff_records['src_only'] = src_only_df[join_columns].to_dict('records')
+
+        # 获取目标端独有记录
+        if tgt_only_count > 0:
+            tgt_only_df = compare.df2_unq_rows
+            diff_records['tgt_only'] = tgt_only_df[join_columns].to_dict('records')
+
+        # 存储差异数据到compare_result
+        self.compare_result['diff_records'] = diff_records
+        from utils.logger import logger
+        logger.info(f"捕获到{sum(len(v) for v in diff_records.values())}条差异数据")
+        # ===== 新增结束 =====
+
         self.compare_result['compare_report'] = compare.report()
         # 计算匹配的行数
         matched_rows = compare.count_matching_rows()

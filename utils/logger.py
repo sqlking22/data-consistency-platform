@@ -51,3 +51,8 @@ class LogManager:
     def get_logger(self):
         """获取logger实例"""
         return self.logger
+
+
+# 创建一个全局默认logger实例
+_default_log_manager = LogManager()
+logger = _default_log_manager.get_logger()
