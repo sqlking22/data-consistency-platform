@@ -29,8 +29,18 @@ class BaseCompareEngine(ABC):
         self.start_time: datetime = None
         self.end_time: datetime = None
 
+        # 元数据缓存（避免重复查询）
+        self._src_metadata_cache: List[Dict] = None
+        self._tgt_metadata_cache: List[Dict] = None
+        self._src_pk_cache: List[str] = None
+        self._tgt_pk_cache: List[str] = None
+        self._compare_columns_cache: Dict[str, List[str]] = None
+
     def init_adapters(self):
-        """初始化源端和目标端数据库适配器"""
+        """初始化源端和目标端数据库适配器（使用连接池）"""
+        # 使用新的简化连接池
+        from utils.db_connection_pool import get_pooled_connection
+
         # 源端适配器
         src_config = {
             'db_type': self.config['src_db_type'],
@@ -40,8 +50,7 @@ class BaseCompareEngine(ABC):
             'password': self.config['src_password'],
             'database': self.config['src_db_name']
         }
-        from core.db_adapter.base_adapter import get_db_adapter
-        self.src_adapter = get_db_adapter(src_config)
+        self.src_adapter = get_pooled_connection(src_config)
 
         # 目标端适配器
         tgt_config = {
@@ -52,7 +61,54 @@ class BaseCompareEngine(ABC):
             'password': self.config['tgt_password'],
             'database': self.config['tgt_db_name']
         }
-        self.tgt_adapter = get_db_adapter(tgt_config)
+        self.tgt_adapter = get_pooled_connection(tgt_config)
+
+        # 缓存元数据和主键信息（避免重复查询）
+        self._cache_metadata()
+
+    def _cache_metadata(self):
+        """缓存表元数据和主键信息（性能优化：避免重复查询数据库）"""
+        import logging
+        logger = logging.getLogger(__name__)
+
+        logger.info("开始缓存表元数据...")
+
+        try:
+            # 缓存源端元数据和主键
+            logger.debug("正在获取源端表元数据...")
+            self._src_metadata_cache = self.src_adapter.get_table_metadata(
+                self.config['src_db_name'],
+                self.config['src_table_name']
+            )
+            logger.debug(f"源端元数据获取完成: {len(self._src_metadata_cache)}个字段")
+
+            logger.debug("正在获取源端主键...")
+            self._src_pk_cache = self.src_adapter.get_primary_keys(
+                self.config['src_db_name'],
+                self.config['src_table_name']
+            )
+            logger.debug(f"源端主键获取完成: {self._src_pk_cache}")
+
+            # 缓存目标端元数据和主键
+            logger.debug("正在获取目标端表元数据...")
+            self._tgt_metadata_cache = self.tgt_adapter.get_table_metadata(
+                self.config['tgt_db_name'],
+                self.config['tgt_table_name']
+            )
+            logger.debug(f"目标端元数据获取完成: {len(self._tgt_metadata_cache)}个字段")
+
+            logger.debug("正在获取目标端主键...")
+            self._tgt_pk_cache = self.tgt_adapter.get_primary_keys(
+                self.config['tgt_db_name'],
+                self.config['tgt_table_name']
+            )
+            logger.debug(f"目标端主键获取完成: {self._tgt_pk_cache}")
+
+            logger.info(f"元数据缓存完成：源端{len(self._src_metadata_cache)}个字段，目标端{len(self._tgt_metadata_cache)}个字段")
+
+        except Exception as e:
+            logger.error(f"缓存元数据失败: {str(e)}")
+            raise
 
     def get_where_clause(self) -> str:
         """构建WHERE子句（增量/全量）"""
@@ -85,12 +141,13 @@ class BaseCompareEngine(ABC):
         return ""
 
     def get_compare_columns(self) -> Dict[str, List[str]]:
-        """获取比对字段"""
-        # 获取主键
-        pk_columns = self.src_adapter.get_primary_keys(
-            self.config['src_db_name'],
-            self.config['src_table_name']
-        )
+        """获取比对字段（使用缓存，避免重复查询）"""
+        # 如果已有缓存，直接返回
+        if self._compare_columns_cache is not None:
+            return self._compare_columns_cache
+
+        # 获取主键（从缓存）
+        pk_columns = self._src_pk_cache
         if not pk_columns:
             raise ValueError("表无主键，无法进行比对")
 
@@ -99,11 +156,18 @@ class BaseCompareEngine(ABC):
         if self.config.get('update_time_str'):
             update_column = [self.config['update_time_str']]
 
-        # 额外字段
-        extra_columns = self.src_adapter.get_extra_columns(
-            self.config['src_db_name'],
-            self.config['src_table_name']
-        )
+        # 额外字段（从缓存的元数据中筛选）
+        from config.settings import SUPPORT_COLUMN_TYPE, EXTRA_COLUMN_FLAG
+        extra_columns = []
+        if EXTRA_COLUMN_FLAG and self._src_metadata_cache:
+            db_type = self.config.get('src_db_type', '').lower()
+            supported_types = SUPPORT_COLUMN_TYPE.get(db_type, set())
+
+            for col_info in self._src_metadata_cache:
+                col_type = col_info['type'].lower()
+                # 匹配字段类型
+                if any(st in col_type for st in supported_types):
+                    extra_columns.append(col_info['name'])
 
         # 排除敏感字段
         sensitive_fields = self.config.get('sensitive_str', '').split(',') if self.config.get('sensitive_str') else []
@@ -119,6 +183,9 @@ class BaseCompareEngine(ABC):
             'update_column': update_column,
             'extra_columns': extra_columns
         }
+
+        # 缓存结果
+        self._compare_columns_cache = columns
 
         # 记录检查字段
         self.compare_result[
@@ -184,11 +251,29 @@ class BaseCompareEngine(ABC):
             # 生成报告（在所有必要字段设置完成之后）
             self.generate_report()
 
-            # 关闭连接
+            # 关闭连接（归还到连接池）
             if self.src_adapter:
-                self.src_adapter.close()
+                from utils.db_connection_pool import return_pooled_connection
+                src_config = {
+                    'db_type': self.config['src_db_type'],
+                    'host': self.config['src_host'],
+                    'port': self.config['src_port'],
+                    'user': self.config['src_username'],
+                    'password': self.config['src_password'],
+                    'database': self.config['src_db_name']
+                }
+                return_pooled_connection(src_config, self.src_adapter)
             if self.tgt_adapter:
-                self.tgt_adapter.close()
+                from utils.db_connection_pool import return_pooled_connection
+                tgt_config = {
+                    'db_type': self.config['tgt_db_type'],
+                    'host': self.config['tgt_host'],
+                    'port': self.config['tgt_port'],
+                    'user': self.config['tgt_username'],
+                    'password': self.config['tgt_password'],
+                    'database': self.config['tgt_db_name']
+                }
+                return_pooled_connection(tgt_config, self.tgt_adapter)
         return self.compare_result
 
 
@@ -205,7 +290,7 @@ def get_compare_engine(config: Dict[str, Any]) -> BaseCompareEngine:
             from core.compare_engine.spark_engine import SparkCompareEngine
             return SparkCompareEngine(config, ENGINE_STRATEGY)
 
-    # 自动选择：先获取数据量
+    # 自动选择：先获取数据量（使用连接池）
     adapter_config = {
         'db_type': config['src_db_type'],
         'host': config['src_host'],
@@ -214,8 +299,8 @@ def get_compare_engine(config: Dict[str, Any]) -> BaseCompareEngine:
         'password': config['src_password'],
         'database': config['src_db_name']
     }
-    from core.db_adapter.base_adapter import get_db_adapter
-    adapter = get_db_adapter(adapter_config)
+    from utils.db_connection_pool import get_pooled_connection, return_pooled_connection
+    adapter = get_pooled_connection(adapter_config)
 
     try:
         where_clause = ""
@@ -228,7 +313,7 @@ def get_compare_engine(config: Dict[str, Any]) -> BaseCompareEngine:
             where_clause
         )
     finally:
-        adapter.close()
+        return_pooled_connection(adapter_config, adapter)
 
     # 根据数据量选择引擎
     if record_count < MAX_RECORDS_THRESHOLD:  # 50万以下用Pandas

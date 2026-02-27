@@ -11,21 +11,14 @@ from core.config_manager import ConfigManager
 from core.compare_engine.base_engine import get_compare_engine
 from core.repair_engine.datax_repair import DataXRepairEngine
 from core.notification import WeChatNotification
-from config.settings import MAX_THREAD_COUNT, TASK_DB_CONFIG, TASK_LOG_TABLE,TASK_CONFIG_TABLE
+from config.settings import MAX_THREAD_COUNT, TASK_DB_CONFIG, TASK_LOG_TABLE, TASK_CONFIG_TABLE, LOG_LEVEL
 from utils.db_utils import write_task_log
+from utils.log_utils import setup_logging
 
 # 配置日志
-LOG_DIR = 'logs'
-LOG_FILE = os.path.join(LOG_DIR, 'data-consistency-platform.log')
-os.makedirs(LOG_DIR, exist_ok=True)  # 确保日志目录存在
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(filename)s:%(lineno)d - %(message)s',
-    handlers=[
-        logging.FileHandler(LOG_FILE),
-        logging.StreamHandler()
-    ]
-)
+setup_logging(log_level=LOG_LEVEL)
+
+# ���制第三方库的详细日志
 logger = logging.getLogger(__name__)
 
 
@@ -40,7 +33,7 @@ def process_single_table(config: dict):
         compare_result = compare_engine.run()
 
         # 2. 发送比对告警（如有）
-        notification.send_compare_alert(config, compare_result)
+        # notification.send_compare_alert(config, compare_result)
 
         # 3. 执行修复（如需）
         repair_result = {}
@@ -51,7 +44,7 @@ def process_single_table(config: dict):
             repair_result = repair_engine.repair()
 
             # 发送修复告警（如有）
-            notification.send_repair_alert(config, repair_result)
+            # notification.send_repair_alert(config, repair_result)
 
         # 4. 合并结果
         total_result = {**config, **compare_result, **repair_result}

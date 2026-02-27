@@ -29,7 +29,7 @@ class WeChatNotification:
             response = requests.post(
                 self.webhook_url,
                 data=json.dumps(data, ensure_ascii=False).encode('utf-8'),
-                headers={ "Content-Type": "application/json; charset=utf-8"},
+                headers={"Content-Type": "application/json; charset=utf-8"},
                 timeout=10
             )
             response.raise_for_status()
@@ -47,13 +47,13 @@ class WeChatNotification:
         if compare_status == 'fail' or matching_rate < (1 - WX_ALERT_THRESHOLD):
             title = f"【数据一致性比对告警】{config['src_table_name']}"
             content = f"""
-表ID：{config.get('table_id')}
-源表：{config['src_db_name']}.{config['src_table_name']}
-目标表：{config['tgt_db_name']}.{config['tgt_table_name']}
-比对状态：{compare_result.get('compare_status')}
-差异记录数：{compare_result.get('diff_cnt')}
-匹配率：{matching_rate:.2%}
-错误信息：{compare_result.get('compare_msg', '')}
+            表ID：{config.get('table_id')}
+            源表：{config['src_db_name']}.{config['src_table_name']}
+            目标表：{config['tgt_db_name']}.{config['tgt_table_name']}
+            比对状态：{compare_result.get('compare_status')}
+            差异记录数：{compare_result.get('diff_cnt')}
+            匹配率：{matching_rate:.2%}
+            错误信息：{compare_result.get('compare_msg', '')}
             """
             self.send_alert(title, content)
 
@@ -62,11 +62,11 @@ class WeChatNotification:
         if repair_result.get('repair_status') == 'fail':
             title = f"【数据修复失败告警】{config['src_table_name']}"
             content = f"""
-表ID：{config.get('table_id')}
-源表：{config['src_db_name']}.{config['src_table_name']}
-目标表：{config['tgt_db_name']}.{config['tgt_table_name']}
-修复状态：{repair_result.get('repair_status')}
-修复记录数：{repair_result.get('repair_cnt', 0)}
-错误信息：{repair_result.get('repair_msg', '')}
+            表ID：{config.get('table_id')}
+            源表：{config['src_db_name']}.{config['src_table_name']}
+            目标表：{config['tgt_db_name']}.{config['tgt_table_name']}
+            修复状态：{repair_result.get('repair_status')}
+            修复记录数：{repair_result.get('repair_cnt', 0)}
+            错误信息：{repair_result.get('repair_msg', '')}
             """
             self.send_alert(title, content)
