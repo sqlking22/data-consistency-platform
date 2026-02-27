@@ -16,7 +16,7 @@ LOG_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), '../logs')
 os.makedirs(LOG_DIR, exist_ok=True)
 
 # 企业微信机器人配置
-WX_WORK_ROBOT = "bdeaef39-cea5-4ef6-8a4c-2ac11bef867f"
+WX_WORK_ROBOT = "fbf38202-fad2-4fae-a30a-cf83c4f644ae"
 WX_AT_LIST = ['hejun']
 # WX_ALERT_THRESHOLD = 0.05  # 差异率超过5%触发告警
 WX_ALERT_THRESHOLD = 0.00 # 差异率超过5%触发告警
@@ -88,6 +88,7 @@ ENABLE_REPAIR = True
 IS_INCREMENTAL = True
 INCREMENTAL_DAYS = 1
 TIME_TOLERANCE = 0  # 时间容差（秒）
+ENABLE_TIME_FILTER = False  # 是否启用时间字段过滤（比对源端和目标端时间字段）False/True
 RETRY_TIMES = 3  # 重试次数
 RETRY_DELAY = 5  # 重试延迟（秒）
 

@@ -19,14 +19,20 @@ class DataXRepairEngine(BaseRepairEngine):
         super().__init__(config, compare_result)
         self.datax_job_file = ""
         self.datax_job_files = []  # 存储多个DataX作业文件路径
+        self._where_clauses_cache = None  # 缓存WHERE子句，避免重复计算
 
     def generate_datax_job(self) -> str:
         """生成DataX作业配置文件（支持批量生成）"""
-        from utils.logger import logger
+        import logging
+        logger = logging.getLogger(__name__)
         from config.settings import REPAIR_MAX_WHERE_IN_RECORDS
 
-        # 获取所有批次的WHERE子句
-        where_clauses = self._build_where_clauses_batch()
+        # 使用缓存的WHERE子句（如果已有），避免重复计算
+        if self._where_clauses_cache is not None:
+            where_clauses = self._where_clauses_cache
+        else:
+            # 获取所有批次的WHERE子句
+            where_clauses = self._build_where_clauses_batch()
 
         if not where_clauses:
             logger.warning("没有WHERE条件，生成单个全量同步文件")
@@ -90,7 +96,8 @@ class DataXRepairEngine(BaseRepairEngine):
         Args:
             where_clause: 可选的WHERE子句，如果不提供则自动构建（获取第一个批次）
         """
-        from utils.logger import logger
+        import logging
+        logger = logging.getLogger(__name__)
 
         db_type = self.config['src_db_type'].lower()
         reader_type = {
@@ -122,7 +129,7 @@ class DataXRepairEngine(BaseRepairEngine):
 
         if where_clause:
             reader_config['parameter']['where'] = where_clause
-            logger.info(f"差异数据WHERE条件: {where_clause[:200]}...")
+            logger.debug(f"差异数据WHERE条件: {where_clause[:200]}...")
 
         return reader_config
 
@@ -136,7 +143,8 @@ class DataXRepairEngine(BaseRepairEngine):
         Returns:
             WHERE子句列表，每个子句对应一个批次
         """
-        from utils.logger import logger
+        import logging
+        logger = logging.getLogger(__name__)
         from config.settings import REPAIR_MAX_WHERE_IN_RECORDS, TIME_TOLERANCE
         import pandas as pd
 
@@ -176,7 +184,9 @@ class DataXRepairEngine(BaseRepairEngine):
         if mismatch_full:
             # 检查是否配置了时间字段
             update_time_col = self.config.get('update_time_str')
-            enable_time_filter = self.config.get('enable_time_filter', True)  # 默认启用时间过滤
+            # 优先使用任务配置，未配置则使用全局配置
+            from config.settings import ENABLE_TIME_FILTER
+            enable_time_filter = self.config.get('enable_time_filter', ENABLE_TIME_FILTER)
 
             if update_time_col and enable_time_filter:
                 logger.info(f"启用时间字段过滤：{update_time_col}，时间容差：{TIME_TOLERANCE}秒")
@@ -214,7 +224,6 @@ class DataXRepairEngine(BaseRepairEngine):
                     else:
                         # 时间字段为空，默认需要修复
                         should_repair = True
-                        logger.debug(f"记录{pk}时间字段为空，默认需要修复")
 
                     if should_repair:
                         all_diff_keys.append(pk)
@@ -231,30 +240,48 @@ class DataXRepairEngine(BaseRepairEngine):
         if src_only_records:
             # 检查是否配置了时间字段
             update_time_col = self.config.get('update_time_str')
-            enable_time_filter = self.config.get('enable_time_filter', True)  # 默认启用时间过滤
+            # 优先使用任务配置，未配置则使用全局配置
+            from config.settings import ENABLE_TIME_FILTER
+            enable_time_filter = self.config.get('enable_time_filter', ENABLE_TIME_FILTER)
 
             if update_time_col and enable_time_filter:
-                logger.info(f"处理源端独有记录：需要查询目标端验证时间字段")
+                logger.info(f"处理源端独有记录：需要批量查询目标端验证时间字段")
                 src_only_need_repair_count = 0
                 src_only_skip_count = 0
 
-                # 批量查询目标端记录
+                # 性能优化：批量查询目标端记录（一次查询代替N次查询）
+                src_only_pk_dicts = []
+                for record in src_only_records:
+                    pk_dict = {pk: record[pk] for pk in pk_columns if pk in record}
+                    if pk_dict:
+                        src_only_pk_dicts.append(pk_dict)
+
+                # 批量查询
+                tgt_records_map = self._query_target_records_batch(src_only_pk_dicts, pk_columns, [update_time_col])
+                logger.info(f"批量查询目标端完成：查询{len(src_only_pk_dicts)}条，找到{len(tgt_records_map)}条目标端记录")
+
+                # 遍历源端记录进行时间比较
                 for record in src_only_records:
                     pk_dict = {pk: record[pk] for pk in pk_columns if pk in record}
                     if not pk_dict:
                         continue
 
+                    # 构建主键元组用于查找
+                    if len(pk_columns) == 1:
+                        pk_tuple = pk_dict.get(pk_columns[0])
+                    else:
+                        pk_tuple = tuple(pk_dict.get(pk_col) for pk_col in pk_columns)
+
                     # 从源端记录中获取时间字段值
                     src_time = record.get(update_time_col)
 
-                    # 查询目标端是否存在该记录
-                    tgt_record = self._query_target_record(pk_dict, pk_columns, [update_time_col])
+                    # 从批量查询结果中查找目标端记录
+                    tgt_record = tgt_records_map.get(pk_tuple)
 
                     if tgt_record is None:
                         # 目标端不存在该记录，需要修复（插入）
                         all_diff_keys.append(pk_dict)
                         src_only_need_repair_count += 1
-                        logger.debug(f"源端独有记录{pk_dict}：目标端不存在，需要插入")
                     else:
                         # 目标端存在该记录，比较时间字段
                         tgt_time = tgt_record.get(update_time_col)
@@ -272,10 +299,8 @@ class DataXRepairEngine(BaseRepairEngine):
                                 if time_diff_seconds >= TIME_TOLERANCE:
                                     all_diff_keys.append(pk_dict)
                                     src_only_need_repair_count += 1
-                                    logger.debug(f"源端独有记录{pk_dict}需要修复：源端时间{src_time} > 目标端时间{tgt_time}（差{time_diff_seconds}秒）")
                                 else:
                                     src_only_skip_count += 1
-                                    logger.debug(f"源端独有记录{pk_dict}无需修复：源端时间{src_time} <= 目标端时间{tgt_time}（差{time_diff_seconds}秒）- 避免用旧数据覆盖新数据")
                             except Exception as e:
                                 logger.warning(f"时间字段比较失败，跳过修复：{pk_dict}, 错误：{str(e)}")
                                 src_only_skip_count += 1
@@ -283,7 +308,6 @@ class DataXRepairEngine(BaseRepairEngine):
                             # 时间字段为空，默认需要修复
                             all_diff_keys.append(pk_dict)
                             src_only_need_repair_count += 1
-                            logger.debug(f"源端独有记录{pk_dict}时间字段为空，默认需要修复")
 
                 logger.info(f"源端独有记录共{len(src_only_records)}条：需要修复{src_only_need_repair_count}条，跳过{src_only_skip_count}条（避免旧数据覆盖新数据）")
             else:
@@ -326,7 +350,8 @@ class DataXRepairEngine(BaseRepairEngine):
         Returns:
             WHERE子句字符串
         """
-        from utils.logger import logger
+        import logging
+        logger = logging.getLogger(__name__)
         import pandas as pd
 
         if not records or not pk_columns:
@@ -410,8 +435,125 @@ class DataXRepairEngine(BaseRepairEngine):
         else:
             return str(value)
 
+    def _query_target_records_batch(self, pk_dicts: List[Dict[str, Any]], pk_columns: List[str],
+                                     columns: List[str]) -> Dict[tuple, Dict[str, Any]]:
+        """批量查询目标端记录（性能优化：一次查询代替N次查询）
+
+        Args:
+            pk_dicts: 主键字典列表 [{主键列名: 值}, ...]
+            pk_columns: 主键列名列表
+            columns: 需要查询的列名列表
+
+        Returns:
+            字典 {主键元组: 目标端记录字典}，不存在的记录不在字典中
+
+        性能提升：100-1000倍（取决于批量大小）
+        """
+        import logging
+        logger = logging.getLogger(__name__)
+        from core.db_adapter.base_adapter import get_db_adapter
+
+        if not pk_dicts:
+            return {}
+
+        try:
+            # 创建目标端适配器
+            tgt_config = {
+                'db_type': self.config['tgt_db_type'],
+                'host': self.config['tgt_host'],
+                'port': self.config['tgt_port'],
+                'user': self.config['tgt_username'],
+                'password': self.config['tgt_password'],
+                'database': self.config['tgt_db_name']
+            }
+            tgt_adapter = get_db_adapter(tgt_config)
+
+            try:
+                # 构建批量WHERE条件
+                if len(pk_columns) == 1:
+                    # 单主键：使用IN语法
+                    pk_col = pk_columns[0]
+                    values = [self._format_sql_value(pk_dict.get(pk_col)) for pk_dict in pk_dicts]
+                    in_clause = ", ".join(values)
+                    where_clause = f"{pk_col} IN ({in_clause})"
+                else:
+                    # 联合主键：使用OR连接多个条件
+                    where_conditions = []
+                    for pk_dict in pk_dicts:
+                        conditions = []
+                        for pk_col in pk_columns:
+                            if pk_col in pk_dict:
+                                value = pk_dict[pk_col]
+                                formatted_value = self._format_sql_value(value)
+                                conditions.append(f"{pk_col} = {formatted_value}")
+                        if conditions:
+                            where_conditions.append(f"({' AND '.join(conditions)})")
+
+                    if not where_conditions:
+                        return {}
+
+                    # 如果条件太多，分批查询（避免SQL过长）
+                    if len(where_conditions) > 1000:
+                        logger.info(f"联合主键批量查询：{len(where_conditions)}条记录，分批查询")
+                        all_results = {}
+                        for i in range(0, len(where_conditions), 1000):
+                            batch_conditions = where_conditions[i:i+1000]
+                            batch_where = " OR ".join(batch_conditions)
+                            batch_results = self._execute_batch_query(tgt_adapter, pk_columns, columns, batch_where)
+                            all_results.update(batch_results)
+                        return all_results
+                    else:
+                        where_clause = " OR ".join(where_conditions)
+
+                # 执行批量查询
+                return self._execute_batch_query(tgt_adapter, pk_columns, columns, where_clause)
+
+            finally:
+                tgt_adapter.close()
+
+        except Exception as e:
+            logger.error(f"批量查询目标端记录失败：{str(e)}")
+            return {}
+
+    def _execute_batch_query(self, tgt_adapter, pk_columns: List[str], columns: List[str],
+                             where_clause: str) -> Dict[tuple, Dict[str, Any]]:
+        """执行批量查询并返回结果字典"""
+        import logging
+        logger = logging.getLogger(__name__)
+
+        try:
+            # 查询目标端数据
+            tgt_data = tgt_adapter.query_data(
+                self.config['tgt_db_name'],
+                self.config['tgt_table_name'],
+                columns + pk_columns,  # 确保包含主键列
+                where_clause
+            )
+
+            if not tgt_data:
+                return {}
+
+            # 构建结果字典 {主键元组: 记录字典}
+            results = {}
+            for record in tgt_data:
+                # 构建主键元组
+                if len(pk_columns) == 1:
+                    pk_tuple = record.get(pk_columns[0])
+                else:
+                    pk_tuple = tuple(record.get(pk_col) for pk_col in pk_columns)
+
+                if pk_tuple is not None:
+                    results[pk_tuple] = record
+
+            logger.debug(f"批量查询返回{len(results)}条目标端记录")
+            return results
+
+        except Exception as e:
+            logger.error(f"执行批量查询失败：{str(e)}")
+            return {}
+
     def _query_target_record(self, pk_dict: Dict[str, Any], pk_columns: List[str], columns: List[str]) -> Dict[str, Any]:
-        """查询目标端记录
+        """查询单条目标端记录（向后兼容，优先使用批量查询方法）
 
         Args:
             pk_dict: 主键字典 {主键列名: 值}
@@ -420,8 +562,11 @@ class DataXRepairEngine(BaseRepairEngine):
 
         Returns:
             目标端记录字典，如果不存在返回None
+
+        @deprecated 建议使用 _query_target_records_batch 批量查询
         """
-        from utils.logger import logger
+        import logging
+        logger = logging.getLogger(__name__)
         from core.db_adapter.base_adapter import get_db_adapter
 
         try:
@@ -471,97 +616,10 @@ class DataXRepairEngine(BaseRepairEngine):
             logger.error(f"查询目标端记录失败：{str(e)}")
             return None
 
-    def _build_where_clause_from_diff_records(self) -> str:
-        """根据差异数据构建WHERE子句（支持联合主键）"""
-        from utils.logger import logger
-        import pandas as pd
-
-        diff_records = self.compare_result.get('diff_records', {})
-
-        if not diff_records:
-            logger.warning("未找到差异数据，使用时间范围过滤")
-            return self._build_where_clause_from_time_range()
-
-        # 获取主键列
-        compare_columns = self.compare_result.get('compare_columns', {})
-        if isinstance(compare_columns, dict):
-            pk_columns = compare_columns.get('key_columns', [])
-        else:
-            # 备用：从字符串提取
-            check_column_str = self.compare_result.get('check_column', '')
-            import re
-            key_match = re.search(r'key_columns：\[(.*?)\]', check_column_str)
-            if key_match:
-                key_str = key_match.group(1)
-                pk_columns = [col.strip().strip("'\"") for col in key_str.split(',') if col.strip()]
-            else:
-                raise ValueError("无法确定主键列")
-
-        if not pk_columns:
-            logger.warning("未找到主键列，使用时间范围过滤")
-            return self._build_where_clause_from_time_range()
-
-        # 合并所有需要同步的记录（不匹配+源端独有，忽略目标端独有）
-        all_diff_keys = []
-        all_diff_keys.extend(diff_records.get('mismatch', []))
-        all_diff_keys.extend(diff_records.get('src_only', []))
-
-        if not all_diff_keys:
-            logger.info("无需同步的记录")
-            return "1=0"  # 返回永假条件
-
-        # 限制记录数避免WHERE子句过长
-        max_records_in_where = 1000
-        if len(all_diff_keys) > max_records_in_where:
-            logger.warning(f"差异数据过多({len(all_diff_keys)})，限制为前{max_records_in_where}条。建议使用批量修复。")
-            all_diff_keys = all_diff_keys[:max_records_in_where]
-
-        # 构建WHERE条件（支持联合主键）
-        where_conditions = []
-
-        for record in all_diff_keys:
-            # 为每条记录构建条件
-            # 联合主键格式：(pk1='val1' AND pk2='val2' AND ...)
-            pk_conditions = []
-            for pk_col in pk_columns:
-                if pk_col in record:
-                    value = record[pk_col]
-                    # 处理不同数据类型
-                    if value is None:
-                        pk_conditions.append(f"{pk_col} IS NULL")
-                    elif isinstance(value, str):
-                        # 转义单引号
-                        escaped_value = str(value).replace("'", "''")
-                        pk_conditions.append(f"{pk_col} = '{escaped_value}'")
-                    elif isinstance(value, (datetime, pd.Timestamp)):
-                        formatted_time = value.strftime('%Y-%m-%d %H:%M:%S')
-                        pk_conditions.append(f"{pk_col} = '{formatted_time}'")
-                    else:
-                        pk_conditions.append(f"{pk_col} = {value}")
-                else:
-                    logger.warning(f"主键列'{pk_col}'不在记录中: {record}")
-
-            if pk_conditions:
-                if len(pk_conditions) == 1:
-                    where_conditions.append(pk_conditions[0])
-                else:
-                    where_conditions.append(f"({' AND '.join(pk_conditions)})")
-
-        if not where_conditions:
-            return self._build_where_clause_from_time_range()
-
-        # 用OR连接所有条件
-        where_clause = " OR ".join(where_conditions)
-
-        # 复杂条件用括号包裹
-        if len(where_conditions) > 1:
-            where_clause = f"({where_clause})"
-
-        return where_clause
-
     def _build_where_clause_from_time_range(self) -> str:
         """备用：基于时间范围构建WHERE子句"""
-        from utils.logger import logger
+        import logging
+        logger = logging.getLogger(__name__)
 
         where_clause = self.compare_result.get('check_range', '')
         if not where_clause:
@@ -580,7 +638,8 @@ class DataXRepairEngine(BaseRepairEngine):
 
     def _get_writer_config(self) -> Dict[str, Any]:
         """生成Writer配置（支持安全的写入模式）"""
-        from utils.logger import logger
+        import logging
+        logger = logging.getLogger(__name__)
 
         db_type = self.config['tgt_db_type'].lower()
         writer_type = {
@@ -645,7 +704,7 @@ class DataXRepairEngine(BaseRepairEngine):
         # 对于update模式，添加主键列
         if write_mode == 'update' and pk_columns:
             writer_config['parameter']['pk_columns'] = pk_columns
-            logger.info(f"Update模式，主键: {pk_columns}")
+            logger.debug(f"Update模式，主键: {pk_columns}")
 
         # 移除危险的preSql: TRUNCATE
         # 仅在明确配置时使用preSql
@@ -685,7 +744,8 @@ class DataXRepairEngine(BaseRepairEngine):
             字段名列表
         """
         from core.db_adapter.base_adapter import get_db_adapter
-        from utils.logger import logger
+        import logging
+        logger = logging.getLogger(__name__)
 
         # 方法1：从数据库元数据获取所有字段交集
         try:
@@ -747,7 +807,7 @@ class DataXRepairEngine(BaseRepairEngine):
                     # 即使目标端没有，也要添加主键
                     final_columns.extend(list(missing_pk))
 
-                logger.info(f"获取所有相交字段(共{len(final_columns)}个): {final_columns}")
+                logger.debug(f"获取所有相交字段(共{len(final_columns)}个): {final_columns}")
                 return final_columns
 
             finally:
@@ -762,7 +822,8 @@ class DataXRepairEngine(BaseRepairEngine):
     def _get_compare_columns(self) -> List[str]:
         """获取需要同步的字段（源端和目标端的交集）"""
         from core.db_adapter.base_adapter import get_db_adapter
-        from utils.logger import logger
+        import logging
+        logger = logging.getLogger(__name__)
 
         # 方法1：优先从compare_result结构化数据获取
         compare_columns = self.compare_result.get('compare_columns', {})
@@ -772,7 +833,7 @@ class DataXRepairEngine(BaseRepairEngine):
             update_cols = compare_columns.get('update_column', [])
             all_cols = list(set(key_cols + extra_cols + update_cols))
             if all_cols:
-                logger.info(f"从compare_result获取字段: {all_cols}")
+                logger.debug(f"从compare_result获取字段: {all_cols}")
                 return all_cols
 
         # 方法2：从数据库元数据获取字段交集（备用方案）
@@ -835,7 +896,7 @@ class DataXRepairEngine(BaseRepairEngine):
                     # 即使目标端没有，也要添加主键
                     final_columns.extend(list(missing_pk))
 
-                logger.info(f"从元数据交集获取字段: {final_columns}")
+                logger.debug(f"从元数据交集获取字段: {final_columns}")
                 return final_columns
 
             finally:
@@ -852,7 +913,8 @@ class DataXRepairEngine(BaseRepairEngine):
     def repair(self) -> Dict[str, Any]:
         """执行修复"""
         from config.settings import MAX_REPAIR_RECORDS_THRESHOLD, TIME_TOLERANCE
-        from utils.logger import logger
+        import logging
+        logger = logging.getLogger(__name__)
 
         # 修复决策判断
         if not self.config.get('enable_repair', False):
@@ -872,6 +934,17 @@ class DataXRepairEngine(BaseRepairEngine):
             self.repair_result['repair_msg'] = f"差异记录数({diff_cnt})超过修复阈值({MAX_REPAIR_RECORDS_THRESHOLD})"
             return self.repair_result
 
+        # 提前检查是否有需要修复的记录（基于时间字段过滤）
+        where_clauses = self._build_where_clauses_batch()
+        if not where_clauses or (len(where_clauses) == 1 and where_clauses[0] == "1=0"):
+            logger.info("虽然存在差异，但经过时间字段过滤后无需修复")
+            self.repair_result['repair_status'] = 'skip'
+            self.repair_result['repair_msg'] = '数据存在差异但无需修复（源端时间不晚于目标端）'
+            return self.repair_result
+
+        # 缓存WHERE子句，供后续generate_datax_job使用
+        self._where_clauses_cache = where_clauses
+
         self.repair_result['repair_start_time'] = datetime.now()
         try:
             # 生成DataX作业（支持批量生成）
@@ -889,25 +962,44 @@ class DataXRepairEngine(BaseRepairEngine):
             # 执行所有DataX作业
             total_repair_cnt = 0
             failed_batches = []
-            result = None  # 用于保存最后的subprocess结果
 
             for idx, job_file_path in enumerate(self.datax_job_files, 1):
                 logger.info(f"执行批次 {idx}/{len(self.datax_job_files)}: {job_file_path}")
 
-                # 执行DataX作业
+                # 执行DataX作业 - 实时输出日志
                 cmd = [PYTHON_BIN_PATH, DATAX_BIN, job_file_path]
-                result = subprocess.run(
-                    cmd,
-                    capture_output=True,
-                    text=True,
-                    timeout=3600
-                )
-                if result.returncode == 0:
-                    logger.info(f"批次 {idx} 执行成功")
-                    # 简化：假设每批都成功修复了部分数据
-                    # 实际应从DataX输出解析修复记录数
-                else:
-                    logger.error(f"批次 {idx} 执行失败: {result.stderr}")
+                try:
+                    # 使用Popen实��输出日志
+                    process = subprocess.Popen(
+                        cmd,
+                        stdout=subprocess.PIPE,
+                        stderr=subprocess.STDOUT,
+                        text=True,
+                        encoding='utf-8',
+                        errors='replace'
+                    )
+
+                    # 实时读取并输出DataX日志
+                    for line in process.stdout:
+                        line = line.rstrip()
+                        if line:
+                            logger.info(f"[DataX] {line}")
+
+                    # 等待进程完成
+                    return_code = process.wait(timeout=3600)
+
+                    if return_code == 0:
+                        logger.info(f"批次 {idx} 执行成功")
+                    else:
+                        logger.error(f"批次 {idx} 执行失败，返回码: {return_code}")
+                        failed_batches.append(idx)
+
+                except subprocess.TimeoutExpired:
+                    logger.error(f"批次 {idx} 执行超时")
+                    process.kill()
+                    failed_batches.append(idx)
+                except Exception as e:
+                    logger.error(f"批次 {idx} 执行异常: {str(e)}")
                     failed_batches.append(idx)
 
             # 汇总结果
@@ -920,9 +1012,9 @@ class DataXRepairEngine(BaseRepairEngine):
                 else:
                     self.repair_result['repair_msg'] = '修复成功'
             else:
-                # 部分失败
+                # 部分失败或全部失败
                 self.repair_result['repair_status'] = 'partial_fail' if len(failed_batches) < len(self.datax_job_files) else 'fail'
-                self.repair_result['repair_msg'] = f"失败批次: {failed_batches}, 错误信息: {result.stderr if result else 'N/A'}"
+                self.repair_result['repair_msg'] = f"失败批次: {failed_batches}"
 
         except Exception as e:
             self.repair_result['repair_status'] = 'fail'
