@@ -18,7 +18,6 @@ from utils.log_utils import setup_logging
 # 配置日志
 setup_logging(log_level=LOG_LEVEL)
 
-# ���制第三方库的详细日志
 logger = logging.getLogger(__name__)
 
 
