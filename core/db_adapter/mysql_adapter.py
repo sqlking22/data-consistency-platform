@@ -24,8 +24,7 @@ class MySQLAdapter(BaseDBAdapter):
                 connect_timeout=30
             )
             self.cursor = self.connection.cursor(pymysql.cursors.DictCursor)
-            logger.info(
-                f"成功连接MySQL数据库：{self.config.get('host')}:{self.config.get('port')}/{self.config.get('database')}")
+            logger.debug(f"成功连接MySQL数据库：{self.config.get('host')}:{self.config.get('port')}/{self.config.get('database')}")
         except Exception as e:
             logger.error(f"MySQL连接失败：{str(e)}")
             raise
@@ -36,7 +35,7 @@ class MySQLAdapter(BaseDBAdapter):
             self.cursor.close()
         if self.connection:
             self.connection.close()
-        logger.info("MySQL连接已关闭")
+        logger.debug("MySQL连接已关闭")
 
     def query(self, sql: str, params: Tuple = None) -> List[Dict]:
         """执行查询"""

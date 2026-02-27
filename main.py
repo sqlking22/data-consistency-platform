@@ -31,8 +31,6 @@ logger = logging.getLogger(__name__)
 
 def process_single_table(config: dict):
     """处理单表比对和修复"""
-    # from utils.logger import LogManager
-    # log_manager = LogManager(config)
     notification = WeChatNotification()
 
     try:

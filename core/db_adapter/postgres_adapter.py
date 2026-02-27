@@ -24,9 +24,7 @@ class PostgresAdapter(BaseDBAdapter):
                 database=self.config.get('database')
             )
             self.cursor = self.connection.cursor(cursor_factory=RealDictCursor)
-            logger.info(
-                f"成功连接PostgreSQL数据库：{self.config.get('host')}:{self.config.get('port')}/{self.config.get('database')}"
-            )
+            logger.debug(f"成功连接PostgreSQL数据库：{self.config.get('host')}:{self.config.get('port')}/{self.config.get('database')}")
         except Exception as e:
             logger.error(f"PostgreSQL连接失败：{str(e)}")
             raise
@@ -37,7 +35,7 @@ class PostgresAdapter(BaseDBAdapter):
             self.cursor.close()
         if self.connection:
             self.connection.close()
-        logger.info("PostgreSQL连接已关闭")
+        logger.debug("PostgreSQL连接已关闭")
 
     @retry_decorator(max_retries=3, delay=5)
     def query(self, sql: str, params: Tuple = None) -> List[Dict]:

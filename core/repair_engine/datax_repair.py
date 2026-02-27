@@ -275,7 +275,7 @@ class DataXRepairEngine(BaseRepairEngine):
                                     logger.debug(f"源端独有记录{pk_dict}需要修复：源端时间{src_time} > 目标端时间{tgt_time}（差{time_diff_seconds}秒）")
                                 else:
                                     src_only_skip_count += 1
-                                    logger.info(f"源端独有记录{pk_dict}无需修复：源端时间{src_time} <= 目标端时间{tgt_time}（差{time_diff_seconds}秒）- 避免用旧数据覆盖新数据")
+                                    logger.debug(f"源端独有记录{pk_dict}无需修复：源端时间{src_time} <= 目标端时间{tgt_time}（差{time_diff_seconds}秒）- 避免用旧数据覆盖新数据")
                             except Exception as e:
                                 logger.warning(f"时间字段比较失败，跳过修复：{pk_dict}, 错误：{str(e)}")
                                 src_only_skip_count += 1

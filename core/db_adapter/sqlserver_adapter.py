@@ -24,9 +24,7 @@ class SQLServerAdapter(BaseDBAdapter):
             )
             self.connection = pyodbc.connect(connection_string)
             self.cursor = self.connection.cursor()
-            logger.info(
-                f"成功连接SQL Server数据库：{self.config.get('host')}:{self.config.get('port')}/{self.config.get('database')}"
-            )
+            logger.debug(f"成功连接SQL Server数据库：{self.config.get('host')}:{self.config.get('port')}/{self.config.get('database')}")
         except Exception as e:
             logger.error(f"SQL Server连接失败：{str(e)}")
             raise
@@ -37,7 +35,7 @@ class SQLServerAdapter(BaseDBAdapter):
             self.cursor.close()
         if self.connection:
             self.connection.close()
-        logger.info("SQL Server连接已关闭")
+        logger.debug("SQL Server连接已关闭")
 
     @retry_decorator(max_retries=3, delay=5)
     def query(self, sql: str, params: Tuple = None) -> List[Dict]:
