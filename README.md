@@ -9,8 +9,6 @@
 - **增量/全量比对**：支持基于时间字段的增量比对，提升效率
 - **自动修复**：通过 DataX 工具自动同步差异数据
 - **告警通知**：企业微信机器人发送比对和修复告警
-- **监控集成**：Prometheus 指标收集
-- **调度集成**：支持 DolphinScheduler 任务调度
 - **多任务并发**：线程池并发处理多个比对任务
 - **安全加密**：支持 AES 加密数据库密码
 - **HTML 报告**：生成可视化比对报告
@@ -24,7 +22,6 @@
 | 数据比对 | datacompy 0.11.0 |
 | ORM框架 | SQLAlchemy 2.0.23 |
 | 数据库驱动 | PyMySQL / cx-Oracle / psycopg2 / pyodbc |
-| 任务调度 | APScheduler 3.10.4 |
 | 命令行工具 | Click 8.1.7 |
 | 模板引擎 | Jinja2 3.1.2 |
 | 加密工具 | pycryptodome 3.19.0 |
@@ -40,7 +37,7 @@
 ### 1. 克隆项目
 
 ```bash
-git clone <repository_url>
+git clone <https://github.com/sqlking22/data-consistency-platform>
 cd data-consistency-platform
 ```
 
@@ -247,7 +244,6 @@ data-consistency-platform/
 │   │   ├── base_repair.py           # 修复引擎基类
 │   │   └── datax_repair.py          # DataX修复实现
 │   ├── config_manager.py            # 配置管理中心
-│   ├── monitor.py                   # 监控指标
 │   └── notification.py              # 企业微信通知
 ├── utils/                           # 工具类
 │   ├── crypto_utils.py              # AES加解密工具
@@ -256,8 +252,6 @@ data-consistency-platform/
 │   ├── logger.py                    # 日志系统
 │   ├── report_utils.py              # 报告生成工具
 │   └── retry_utils.py               # 重试工具
-├── scheduler/                       # 调度集成
-│   └── dolphin_scheduler.py         # DolphinScheduler集成
 ├── tests/                           # 测试用例
 │   ├── conftest.py                  # pytest配置和夹具
 │   ├── test_compare_engine.py       # 比对引擎测试
